@@ -3,15 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { ownDriverId } from '../middleware/auth';
 import { emitTripChanged } from '../realtime/events';
-import { sendPush } from '../realtime/push';
-
-const tripInclude = {
-  driver: { include: { vehicle: true } },
-  stops: {
-    include: { location: true, guests: true },
-    orderBy: { sequenceIndex: 'asc' as const },
-  },
-};
+import { createTripRecord, tripInclude } from '../services/tripAssignment';
 
 // Admin/Ops: visibility into all upcoming/in-progress trips.
 export async function listTrips(_req: Request, res: Response) {
@@ -66,50 +58,7 @@ export async function createTrip(req: Request, res: Response) {
     return;
   }
 
-  const tripId = await prisma.$transaction(async (tx) => {
-    const created = await tx.trip.create({
-      data: {
-        driverId: data.driverId,
-        createdBy: 'admin',
-        stops: {
-          create: data.stops.map((s) => ({
-            sequenceIndex: s.sequenceIndex,
-            stopType: s.stopType,
-            locationId: s.locationId,
-            eta: s.eta,
-            guests: { connect: s.guestIds.map((id) => ({ id })) },
-          })),
-        },
-      },
-    });
-
-    await tx.guest.updateMany({ where: { id: { in: guestIds } }, data: { status: 'MATCHED' } });
-    await tx.driver.update({ where: { id: data.driverId }, data: { status: 'ASSIGNED' } });
-
-    return created.id;
-  });
-
-  // Re-fetched after the transaction commits so the response reflects the
-  // guests' and driver's post-update state, not a pre-update snapshot.
-  const trip = await prisma.trip.findUniqueOrThrow({ where: { id: tripId }, include: tripInclude });
-
-  emitTripChanged({ driverId: data.driverId, guestIds });
-
-  const pickup = trip.stops.find((s) => s.stopType === 'PICKUP');
-  const dropoff = trip.stops.find((s) => s.stopType === 'DROPOFF');
-  await sendPush(driver.pushToken, {
-    title: 'New trip assigned',
-    body: `Pick up at ${pickup?.location.name ?? 'pickup point'} → drop at ${dropoff?.location.name ?? 'destination'}`,
-  });
-  await Promise.all(
-    guests.map((guest) =>
-      sendPush(guest.pushToken, {
-        title: "You've been matched with a driver",
-        body: `${driver.name} · ${driver.vehicle.plateNumber}`,
-      }),
-    ),
-  );
-
+  const trip = await createTripRecord({ driverId: data.driverId, stops: data.stops, createdBy: 'admin' });
   res.status(201).json(trip);
 }
 

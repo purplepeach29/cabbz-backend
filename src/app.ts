@@ -6,6 +6,7 @@ import { vehiclesRouter } from './routes/vehicles.routes';
 import { driversRouter } from './routes/drivers.routes';
 import { guestsRouter } from './routes/guests.routes';
 import { tripsRouter } from './routes/trips.routes';
+import { matchingRouter } from './routes/matching.routes';
 import { errorHandler } from './middleware/errorHandler';
 
 export const app = express();
@@ -21,5 +22,6 @@ app.use('/vehicles', vehiclesRouter);
 app.use('/drivers', driversRouter);
 app.use('/guests', guestsRouter);
 app.use('/trips', tripsRouter);
+app.use('/matching', matchingRouter);
 
 app.use(errorHandler);

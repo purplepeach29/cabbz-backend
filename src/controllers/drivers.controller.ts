@@ -4,6 +4,8 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { ownDriverId } from '../middleware/auth';
+import { emitDriverLocation, emitOpsRefresh } from '../realtime/events';
+import { getEta, shouldRefreshEta, type Eta } from '../lib/googleMaps';
 
 // Admin/Ops: full fleet view (status, location, current trip) — never exposed to drivers.
 export async function listDrivers(_req: Request, res: Response) {
@@ -51,6 +53,7 @@ export async function createDriver(req: Request, res: Response) {
     });
   });
 
+  emitOpsRefresh();
   // Temporary password is returned once so ops can hand it to the driver out of band.
   res.status(201).json({ driver, temporaryPassword: password });
 }
@@ -66,6 +69,7 @@ export async function updateDriverStatus(req: Request, res: Response) {
     where: { id: req.params.driverId },
     data: { status },
   });
+  emitOpsRefresh();
   res.json(driver);
 }
 
@@ -82,13 +86,44 @@ const locationPingSchema = z.object({
   lng: z.number(),
 });
 
+// Location pings arrive every ~10s while a trip is active; a fresh Distance
+// Matrix call on every single one would be wasteful. This throttles actual
+// Maps calls while still emitting the last-known ETA on ticks in between.
+const ETA_REFRESH_MS = 20_000;
+const lastKnownEta = new Map<string, Eta>();
+
 // Driver-role only, and always scoped to the token's own driverId — a driver
 // can never write another driver's location.
 export async function pingOwnLocation(req: Request, res: Response) {
+  const driverId = ownDriverId(req);
   const { lat, lng } = locationPingSchema.parse(req.body);
   const driver = await prisma.driver.update({
-    where: { id: ownDriverId(req) },
+    where: { id: driverId },
     data: { currentLat: lat, currentLng: lng, lastPingAt: new Date() },
   });
+
+  const activeTrip = await prisma.trip.findFirst({
+    where: { driverId, status: { in: ['ACCEPTED', 'IN_PROGRESS'] } },
+    include: { stops: { include: { guests: true, location: true }, orderBy: { sequenceIndex: 'asc' } } },
+  });
+  const guestIds = [...new Set(activeTrip?.stops.flatMap((s) => s.guests.map((g) => g.id)) ?? [])];
+
+  const nextStop = activeTrip?.stops.find((s) => s.status !== 'COMPLETED');
+  if (nextStop && shouldRefreshEta(driverId, ETA_REFRESH_MS)) {
+    const eta = await getEta({ lat, lng }, { lat: nextStop.location.lat, lng: nextStop.location.lng });
+    if (eta) lastKnownEta.set(driverId, eta);
+  }
+  const eta = nextStop ? lastKnownEta.get(driverId) : undefined;
+
+  emitDriverLocation({ driverId, lat, lng, guestIds, etaSeconds: eta?.durationSeconds, distanceMeters: eta?.distanceMeters });
+
   res.json({ id: driver.id, currentLat: driver.currentLat, currentLng: driver.currentLng, lastPingAt: driver.lastPingAt });
+}
+
+const pushTokenSchema = z.object({ token: z.string().min(1) });
+
+export async function registerOwnPushToken(req: Request, res: Response) {
+  const { token } = pushTokenSchema.parse(req.body);
+  await prisma.driver.update({ where: { id: ownDriverId(req) }, data: { pushToken: token } });
+  res.status(204).end();
 }

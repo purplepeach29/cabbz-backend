@@ -71,3 +71,12 @@ export async function getOwnGuestProfile(req: Request, res: Response) {
   });
   res.json(guest);
 }
+
+
+const pushTokenSchema = z.object({ token: z.string().min(1) });
+
+export async function registerOwnPushToken(req: Request, res: Response) {
+  const { token } = pushTokenSchema.parse(req.body);
+  await prisma.guest.update({ where: { id: req.auth!.sub }, data: { pushToken: token } });
+  res.status(204).end();
+}

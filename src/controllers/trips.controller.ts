@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { ownDriverId } from '../middleware/auth';
+import { emitTripChanged } from '../realtime/events';
+import { sendPush } from '../realtime/push';
 
 const tripInclude = {
   driver: { include: { vehicle: true } },
@@ -91,6 +93,23 @@ export async function createTrip(req: Request, res: Response) {
   // guests' and driver's post-update state, not a pre-update snapshot.
   const trip = await prisma.trip.findUniqueOrThrow({ where: { id: tripId }, include: tripInclude });
 
+  emitTripChanged({ driverId: data.driverId, guestIds });
+
+  const pickup = trip.stops.find((s) => s.stopType === 'PICKUP');
+  const dropoff = trip.stops.find((s) => s.stopType === 'DROPOFF');
+  await sendPush(driver.pushToken, {
+    title: 'New trip assigned',
+    body: `Pick up at ${pickup?.location.name ?? 'pickup point'} → drop at ${dropoff?.location.name ?? 'destination'}`,
+  });
+  await Promise.all(
+    guests.map((guest) =>
+      sendPush(guest.pushToken, {
+        title: "You've been matched with a driver",
+        body: `${driver.name} · ${driver.vehicle.plateNumber}`,
+      }),
+    ),
+  );
+
   res.status(201).json(trip);
 }
 
@@ -129,6 +148,12 @@ export async function respondToTrip(req: Request, res: Response) {
     return;
   }
 
+  const stops = await prisma.tripStop.findMany({
+    where: { tripId: trip.id },
+    include: { guests: true },
+  });
+  const guestIds = [...new Set(stops.flatMap((s) => s.guests.map((g) => g.id)))];
+
   if (action === 'accept') {
     const updated = await prisma.trip.update({
       where: { id: trip.id },
@@ -136,15 +161,10 @@ export async function respondToTrip(req: Request, res: Response) {
       include: tripInclude,
     });
     await prisma.driver.update({ where: { id: driverId }, data: { status: 'EN_ROUTE_PICKUP' } });
+    emitTripChanged({ driverId, guestIds });
     res.json(updated);
     return;
   }
-
-  const stops = await prisma.tripStop.findMany({
-    where: { tripId: trip.id },
-    include: { guests: true },
-  });
-  const guestIds = [...new Set(stops.flatMap((s) => s.guests.map((g) => g.id)))];
 
   const [updated] = await prisma.$transaction([
     prisma.trip.update({ where: { id: trip.id }, data: { status: 'REJECTED' }, include: tripInclude }),
@@ -155,6 +175,7 @@ export async function respondToTrip(req: Request, res: Response) {
     prisma.driver.update({ where: { id: driverId }, data: { status: 'AVAILABLE' } }),
   ]);
 
+  emitTripChanged({ driverId, guestIds });
   res.json(updated);
 }
 
@@ -195,14 +216,14 @@ export async function updateStopStatus(req: Request, res: Response) {
     return;
   }
 
-  const guestIds = stop.guests.map((g) => g.id);
+  const stopGuestIds = stop.guests.map((g) => g.id);
 
   if (action === 'boarded') {
     if (stop.stopType !== 'PICKUP') {
       res.status(400).json({ error: '"boarded" only applies to pickup stops' });
       return;
     }
-    await prisma.guest.updateMany({ where: { id: { in: guestIds } }, data: { status: 'IN_TRANSIT' } });
+    await prisma.guest.updateMany({ where: { id: { in: stopGuestIds } }, data: { status: 'IN_TRANSIT' } });
     await completeStop(trip.id, stop, driverId);
   } else {
     await prisma.tripStop.update({ where: { id: stop.id }, data: { status: 'ARRIVED', actualArrivalAt: new Date() } });
@@ -210,11 +231,13 @@ export async function updateStopStatus(req: Request, res: Response) {
       await prisma.trip.update({ where: { id: trip.id }, data: { status: 'IN_PROGRESS' } });
     }
     if (stop.stopType === 'DROPOFF') {
-      await prisma.guest.updateMany({ where: { id: { in: guestIds } }, data: { status: 'COMPLETED' } });
+      await prisma.guest.updateMany({ where: { id: { in: stopGuestIds } }, data: { status: 'COMPLETED' } });
       await completeStop(trip.id, stop, driverId);
     }
   }
 
   const updatedTrip = await prisma.trip.findUniqueOrThrow({ where: { id: trip.id }, include: tripInclude });
+  const allGuestIds = [...new Set(updatedTrip.stops.flatMap((s) => s.guests.map((g) => g.id)))];
+  emitTripChanged({ driverId, guestIds: allGuestIds });
   res.json(updatedTrip);
 }

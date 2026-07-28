@@ -7,6 +7,7 @@ import {
   updateDriverStatus,
   getOwnDriverProfile,
   pingOwnLocation,
+  registerOwnPushToken,
 } from '../controllers/drivers.controller';
 
 export const driversRouter = Router();
@@ -19,3 +20,4 @@ driversRouter.patch('/:driverId/status', authenticate, requireRole('ADMIN'), asy
 // Driver — scoped to the caller's own record only.
 driversRouter.get('/me', authenticate, requireRole('DRIVER'), asyncHandler(getOwnDriverProfile));
 driversRouter.patch('/me/location', authenticate, requireRole('DRIVER'), asyncHandler(pingOwnLocation));
+driversRouter.patch('/me/push-token', authenticate, requireRole('DRIVER'), asyncHandler(registerOwnPushToken));

@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
+import { emitOpsRefresh } from '../realtime/events';
 
 export async function listLocations(_req: Request, res: Response) {
   const locations = await prisma.location.findMany({ orderBy: { name: 'asc' } });
@@ -17,5 +18,6 @@ const createLocationSchema = z.object({
 export async function createLocation(req: Request, res: Response) {
   const data = createLocationSchema.parse(req.body);
   const location = await prisma.location.create({ data });
+  emitOpsRefresh();
   res.status(201).json(location);
 }

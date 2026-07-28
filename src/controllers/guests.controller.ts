@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
+import { emitOpsRefresh } from '../realtime/events';
 
 // Admin/Ops: full guest queue (waiting, assigned, in transit).
 export async function listGuests(_req: Request, res: Response) {
@@ -35,6 +36,7 @@ export async function createGuest(req: Request, res: Response) {
     data: { ...data, inviteCode },
     include: { origin: true, destination: true },
   });
+  emitOpsRefresh();
   res.status(201).json(guest);
 }
 
@@ -48,6 +50,7 @@ export async function updateGuest(req: Request, res: Response) {
     data,
     include: { origin: true, destination: true },
   });
+  emitOpsRefresh();
   res.json(guest);
 }
 

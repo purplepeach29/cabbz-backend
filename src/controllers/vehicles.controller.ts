@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
+import { emitOpsRefresh } from '../realtime/events';
 
 export async function listVehicles(_req: Request, res: Response) {
   const vehicles = await prisma.vehicle.findMany({
@@ -19,5 +20,6 @@ const createVehicleSchema = z.object({
 export async function createVehicle(req: Request, res: Response) {
   const data = createVehicleSchema.parse(req.body);
   const vehicle = await prisma.vehicle.create({ data });
+  emitOpsRefresh();
   res.status(201).json(vehicle);
 }

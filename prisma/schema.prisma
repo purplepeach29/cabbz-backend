@@ -1,0 +1,183 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  DRIVER
+}
+
+enum DriverStatus {
+  OFFLINE
+  AVAILABLE
+  ASSIGNED
+  EN_ROUTE_PICKUP
+  EN_ROUTE_DROP
+  ON_BREAK
+}
+
+enum LocationType {
+  VENUE
+  ACCOMMODATION
+  AIRPORT
+  STATION
+}
+
+enum TripType {
+  ARRIVAL
+  TO_VENUE
+  FROM_VENUE
+  DEPARTURE
+  ON_DEMAND
+}
+
+enum GuestStatus {
+  UNSCHEDULED
+  PENDING_APPROVAL
+  QUEUED
+  MATCHED
+  IN_TRANSIT
+  COMPLETED
+  CANCELLED
+}
+
+enum PriorityTier {
+  NORMAL
+  PRIORITY
+}
+
+enum TripStatus {
+  PROPOSED
+  ACCEPTED
+  REJECTED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum StopType {
+  PICKUP
+  DROPOFF
+}
+
+enum StopStatus {
+  PENDING
+  ARRIVED
+  COMPLETED
+}
+
+// Admin and driver login. Guests authenticate separately via inviteCode (see Guest).
+model User {
+  id           String   @id @default(cuid())
+  role         Role
+  email        String   @unique
+  passwordHash String
+  driver       Driver?
+  createdAt    DateTime @default(now())
+}
+
+model Vehicle {
+  id               String  @id @default(cuid())
+  plateNumber      String  @unique
+  seatCapacity     Int
+  luggageCapacity  Int
+  driver           Driver?
+}
+
+model Driver {
+  id                 String       @id @default(cuid())
+  name               String
+  phone              String
+  user               User         @relation(fields: [userId], references: [id])
+  userId             String       @unique
+  vehicle            Vehicle      @relation(fields: [vehicleId], references: [id])
+  vehicleId          String       @unique
+  status             DriverStatus @default(OFFLINE)
+  currentLat         Float?
+  currentLng         Float?
+  lastPingAt         DateTime?
+  predictedFreeAt    DateTime?
+  shiftStart         DateTime?
+  shiftEnd           DateTime?
+  lastBreakEndedAt   DateTime?
+  pushToken          String?
+  trips              Trip[]
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+}
+
+// Fixed reference points: venue, each accommodation, airport, railway station.
+model Location {
+  id   String       @id @default(cuid())
+  type LocationType
+  name String
+  lat  Float
+  lng  Float
+
+  guestsOrigin      Guest[]    @relation("GuestOrigin")
+  guestsDestination Guest[]    @relation("GuestDestination")
+  tripStops         TripStop[]
+}
+
+// One row per trip *request* for an attendee (an attendee may have several
+// Guest rows across the event: arrival, daily to/from venue, departure).
+model Guest {
+  id            String       @id @default(cuid())
+  name          String
+  phone         String
+  inviteCode    String       @unique
+  groupSize     Int          @default(1)
+  luggageUnits  Int          @default(0)
+  tripType      TripType
+
+  origin        Location     @relation("GuestOrigin", fields: [originId], references: [id])
+  originId      String
+  originLabel   String? // e.g. flight/train number, free-form detail on top of the fixed Location
+  destination   Location     @relation("GuestDestination", fields: [destinationId], references: [id])
+  destinationId String
+
+  pickupWindowStart DateTime?
+  pickupWindowEnd   DateTime?
+
+  status        GuestStatus  @default(UNSCHEDULED)
+  priorityTier  PriorityTier @default(NORMAL)
+  queuedSince   DateTime?
+  pushToken     String?
+
+  tripStops     TripStop[]   @relation("GuestTripStops")
+
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+}
+
+model Trip {
+  id        String     @id @default(cuid())
+  driver    Driver     @relation(fields: [driverId], references: [id])
+  driverId  String
+  status    TripStatus @default(PROPOSED)
+  createdBy String     @default("admin") // 'admin' | 'engine' — always 'admin' until Phase 3+
+  stops     TripStop[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+model TripStop {
+  id              String     @id @default(cuid())
+  trip            Trip       @relation(fields: [tripId], references: [id])
+  tripId          String
+  sequenceIndex   Int
+  stopType        StopType
+  location        Location   @relation(fields: [locationId], references: [id])
+  locationId      String
+  guests          Guest[]    @relation("GuestTripStops")
+  eta             DateTime?
+  actualArrivalAt DateTime?
+  status          StopStatus @default(PENDING)
+
+  @@unique([tripId, sequenceIndex])
+}

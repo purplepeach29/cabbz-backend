@@ -5,7 +5,8 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { ownDriverId } from '../middleware/auth';
 import { emitDriverLocation, emitOpsRefresh } from '../realtime/events';
-import { getEta, shouldRefreshEta, type Eta } from '../lib/googleMaps';
+import { getEta, shouldRefreshEta } from '../lib/googleMaps';
+import { lastKnownEta, committedEta, isDelayed } from '../lib/etaState';
 
 // Admin/Ops: full fleet view (status, location, current trip) — never exposed to drivers.
 export async function listDrivers(_req: Request, res: Response) {
@@ -90,7 +91,6 @@ const locationPingSchema = z.object({
 // Matrix call on every single one would be wasteful. This throttles actual
 // Maps calls while still emitting the last-known ETA on ticks in between.
 const ETA_REFRESH_MS = 20_000;
-const lastKnownEta = new Map<string, Eta>();
 
 // Driver-role only, and always scoped to the token's own driverId — a driver
 // can never write another driver's location.
@@ -111,11 +111,27 @@ export async function pingOwnLocation(req: Request, res: Response) {
   const nextStop = activeTrip?.stops.find((s) => s.status !== 'COMPLETED');
   if (nextStop && shouldRefreshEta(driverId, ETA_REFRESH_MS)) {
     const eta = await getEta({ lat, lng }, { lat: nextStop.location.lat, lng: nextStop.location.lng });
-    if (eta) lastKnownEta.set(driverId, eta);
+    if (eta) {
+      lastKnownEta.set(driverId, eta);
+      // First live ETA after acceptance becomes the baseline every later
+      // ping is compared against — see etaState.ts for why not just
+      // comparing against the previous ping.
+      if (!committedEta.has(driverId)) committedEta.set(driverId, eta.durationSeconds);
+    }
   }
   const eta = nextStop ? lastKnownEta.get(driverId) : undefined;
+  const baseline = committedEta.get(driverId);
+  const delayed = eta && baseline != null ? isDelayed(baseline, eta.durationSeconds) : false;
 
-  emitDriverLocation({ driverId, lat, lng, guestIds, etaSeconds: eta?.durationSeconds, distanceMeters: eta?.distanceMeters });
+  emitDriverLocation({
+    driverId,
+    lat,
+    lng,
+    guestIds,
+    etaSeconds: eta?.durationSeconds,
+    distanceMeters: eta?.distanceMeters,
+    delayed,
+  });
 
   res.json({ id: driver.id, currentLat: driver.currentLat, currentLng: driver.currentLng, lastPingAt: driver.lastPingAt });
 }

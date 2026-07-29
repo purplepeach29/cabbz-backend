@@ -20,6 +20,7 @@ export function emitDriverLocation(params: {
   guestIds: string[];
   etaSeconds?: number;
   distanceMeters?: number;
+  delayed?: boolean;
 }) {
   const io = getIo();
   const payload = {
@@ -29,6 +30,7 @@ export function emitDriverLocation(params: {
     at: new Date().toISOString(),
     etaSeconds: params.etaSeconds,
     distanceMeters: params.distanceMeters,
+    delayed: params.delayed,
   };
   io.to('ops:all').emit('driver:location', payload);
   for (const guestId of params.guestIds) {

@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma';
 import { ownDriverId } from '../middleware/auth';
 import { emitTripChanged } from '../realtime/events';
 import { createTripRecord, tripInclude } from '../services/tripAssignment';
+import { clearEtaState } from '../lib/etaState';
 
 // Admin/Ops: visibility into all upcoming/in-progress trips.
 export async function listTrips(_req: Request, res: Response) {
@@ -124,6 +125,7 @@ export async function respondToTrip(req: Request, res: Response) {
     prisma.driver.update({ where: { id: driverId }, data: { status: 'AVAILABLE' } }),
   ]);
 
+  clearEtaState(driverId);
   emitTripChanged({ driverId, guestIds });
   res.json(updated);
 }
@@ -138,6 +140,7 @@ async function completeStop(tripId: string, stop: { id: string; sequenceIndex: n
   if (isLastStop) {
     await prisma.trip.update({ where: { id: tripId }, data: { status: 'COMPLETED' } });
     await prisma.driver.update({ where: { id: driverId }, data: { status: 'AVAILABLE', predictedFreeAt: new Date() } });
+    clearEtaState(driverId);
   } else {
     await prisma.driver.update({ where: { id: driverId }, data: { status: 'EN_ROUTE_PICKUP' } });
   }

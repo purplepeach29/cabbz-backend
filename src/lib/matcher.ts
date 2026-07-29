@@ -16,6 +16,7 @@ export type MatcherGuest = {
   originLng: number;
   destinationLat: number;
   destinationLng: number;
+  waitMinutes: number;
 };
 
 export type MatcherStop = {

@@ -2,7 +2,9 @@ import crypto from 'crypto';
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
+import { signToken } from '../lib/jwt';
 import { emitOpsRefresh } from '../realtime/events';
+import { runMatchingRound } from '../services/matchingRound';
 
 // Admin/Ops: full guest queue (waiting, assigned, in transit).
 export async function listGuests(_req: Request, res: Response) {
@@ -79,4 +81,58 @@ export async function registerOwnPushToken(req: Request, res: Response) {
   const { token } = pushTokenSchema.parse(req.body);
   await prisma.guest.update({ where: { id: req.auth!.sub }, data: { pushToken: token } });
   res.status(204).end();
+}
+
+const onDemandRequestSchema = z.object({
+  tripType: z.enum(['ARRIVAL', 'TO_VENUE', 'FROM_VENUE', 'DEPARTURE', 'ON_DEMAND']).default('ON_DEMAND'),
+  originId: z.string().min(1),
+  destinationId: z.string().min(1),
+  groupSize: z.number().int().positive().default(1),
+  luggageUnits: z.number().int().nonnegative().default(0),
+});
+
+
+export async function createOnDemandRequest(req: Request, res: Response) {
+  const data = onDemandRequestSchema.parse(req.body);
+  const currentGuest = await prisma.guest.findUniqueOrThrow({ where: { id: req.auth!.sub } });
+
+  const inviteCode = crypto.randomBytes(4).toString('hex');
+  const guest = await prisma.guest.create({
+    data: {
+      ...data,
+      name: currentGuest.name,
+      phone: currentGuest.phone,
+      inviteCode,
+      status: 'PENDING_APPROVAL',
+    },
+    include: { origin: true, destination: true },
+  });
+
+  emitOpsRefresh();
+
+  const token = signToken({ kind: 'guest', sub: guest.id });
+  res.status(201).json({ guest, token });
+}
+//Approving only queues the guest for the matching engine — admin never picks the driver.
+export async function approveGuestRequest(req: Request, res: Response) {
+  const guest = await prisma.guest.update({
+    where: { id: req.params.guestId },
+    data: { status: 'QUEUED', queuedSince: new Date() },
+    include: { origin: true, destination: true },
+  });
+  emitOpsRefresh();
+
+  const matchResult = await runMatchingRound();
+
+  res.json({ guest, matchResult });
+}
+
+export async function declineGuestRequest(req: Request, res: Response) {
+  const guest = await prisma.guest.update({
+    where: { id: req.params.guestId },
+    data: { status: 'CANCELLED' },
+    include: { origin: true, destination: true },
+  });
+  emitOpsRefresh();
+  res.json(guest);
 }
